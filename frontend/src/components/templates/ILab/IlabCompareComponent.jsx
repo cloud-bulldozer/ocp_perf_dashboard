@@ -29,6 +29,7 @@ import { useState } from "react";
 import ILabSummary from "./ILabSummary";
 import ILabMetadata from "./ILabMetadata";
 import MetricsSelect from "./MetricsDropdown";
+import MetricTitle from "./MetricTitle";
 
 const IlabCompareComponent = () => {
   const { page, perPage, totalItems, tableData } = useSelector(
@@ -118,6 +119,9 @@ const IlabCompareComponent = () => {
       <Stack hasGutter>
         <StackItem span={12} className="metrics-select">
           <MetricsSelect ids={selectedItems} />
+        </StackItem>
+        <StackItem span={12}>
+          <MetricTitle />
         </StackItem>
         <StackItem span={12} className="summary-box">
           {isSummaryLoading ? (
