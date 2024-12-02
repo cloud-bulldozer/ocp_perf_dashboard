@@ -21,3 +21,21 @@ FIELDS = (
     "infraNodesCount",
     "totalNodesCount",
 )
+FIELD_CONSTANT_DICT = {
+    "ciSystem": "ciSystem.keyword",
+    "platform": "platform.keyword",
+    "benchmark": "benchmark.keyword",
+    "releaseStream": "releaseStream.keyword",
+    "networkType": "networkType.keyword",
+    "workerNodesCount": "workerNodesCount",
+    "jobStatus": "jobStatus.keyword",
+    "controlPlaneArch": "controlPlaneArch.keyword",
+    "publish": "publish.keyword",
+    "fips": "fips.keyword",
+    "encrypted": "encrypted.keyword",
+    "ipsec": "ipsec.keyword",
+    "ocpVersion": "ocpVersion.keyword",
+    "build": "ocpVersion.keyword",
+    "upstream": "upstreamJob.keyword",
+    "clusterType": "clusterType.keyword",
+}

@@ -96,3 +96,25 @@ def build_sort_terms(sort_string: str) -> list[dict[str, str]]:
             )
         sort_terms.append({f"{key}": {"order": dir}})
     return sort_terms
+
+
+def buildAggregateQuery():
+    aggregate = {}
+    for x, y in constants.FIELD_CONSTANT_DICT.items():
+        obj = {x: {"terms": {"field": y}}}
+        aggregate.update(obj)
+    return aggregate
+
+
+def removeKeys(filterDict, keys_to_remove):
+    for key in keys_to_remove:
+        if key in filterDict:
+            del filterDict[key]
+    return filterDict
+
+
+def find_item_in_list(dict_list, key, value):
+    for item in dict_list:
+        if item.get(key) == value:
+            return item
+    return None
