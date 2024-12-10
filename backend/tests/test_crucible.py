@@ -26,6 +26,13 @@ def fake_elastic(monkeypatch, fake_config):
     )
 
 
+@pytest.fixture
+async def fake_crucible(fake_elastic):
+    crucible = CrucibleService("TEST")
+    yield crucible
+    await crucible.close()
+
+
 class TestParser:
 
     def test_parse_normal(self):
@@ -80,17 +87,16 @@ class TestCommonParams:
 
 class TestCrucible:
 
-    async def test_create(self, fake_elastic):
+    async def test_create(self, fake_crucible):
         """Create and close a CrucibleService instance"""
 
-        crucible = CrucibleService("TEST")
-        assert crucible
-        assert isinstance(crucible, CrucibleService)
-        assert isinstance(crucible.elastic, AsyncElasticsearch)
-        assert app.config.get_config().get("TEST.url") == crucible.url
-        elastic = crucible.elastic
-        await crucible.close()
-        assert crucible.elastic is None
+        assert fake_crucible
+        assert isinstance(fake_crucible, CrucibleService)
+        assert isinstance(fake_crucible.elastic, AsyncElasticsearch)
+        assert app.config.get_config().get("TEST.url") == fake_crucible.url
+        elastic = fake_crucible.elastic
+        await fake_crucible.close()
+        assert fake_crucible.elastic is None
         assert elastic.closed
 
     def test_no_hits(self):
@@ -124,13 +130,12 @@ class TestCrucible:
             CrucibleService._hits({"hits": {"hits": payload}}, ["f"])
         )
 
-    async def test_metric_ids_none(self, fake_elastic):
+    async def test_metric_ids_none(self, fake_crucible):
         """A simple query for failure matching metric IDs"""
 
-        crucible = CrucibleService("TEST")
-        crucible.elastic.set_query("metric_desc", [])
+        fake_crucible.elastic.set_query("metric_desc", [])
         with pytest.raises(HTTPException) as e:
-            await crucible._get_metric_ids("runid", "source::type")
+            await fake_crucible._get_metric_ids("runid", "source::type")
         assert 400 == e.value.status_code
         assert "No matches for source::type" == e.value.detail
 
@@ -152,13 +157,109 @@ class TestCrucible:
             ),
         ),
     )
-    async def test_metric_ids(self, fake_elastic, found, expected):
+    async def test_metric_ids(self, fake_crucible, found, expected):
         """A simple query for matching metric IDs"""
 
-        crucible = CrucibleService("TEST")
-        crucible.elastic.set_query("metric_desc", found)
-        assert expected == await crucible._get_metric_ids(
+        fake_crucible.elastic.set_query("metric_desc", found)
+        assert expected == await fake_crucible._get_metric_ids(
             "runid",
             "source::type",
             aggregate=len(expected) > 1,
         )
+
+    async def test_run_filters(self, fake_crucible):
+        """Test aggregations
+
+        This is the "simplest" aggregation-based query, but we need to define
+        fake aggregations for the tag, param, and run indices.
+        """
+
+        fake_crucible.elastic.set_query(
+            "tag",
+            aggregation_list={
+                "key": [
+                    {
+                        "key": "topology",
+                        "doc_count": 25,
+                        "values": {
+                            "doc_count_error_upper_bound": 0,
+                            "sum_other_doc_count": 0,
+                            "buckets": [],
+                        },
+                    },
+                    {
+                        "key": "accelerator",
+                        "doc_count": 19,
+                        "values": {
+                            "doc_count_error_upper_bound": 0,
+                            "sum_other_doc_count": 0,
+                            "buckets": [
+                                {"key": "A100", "doc_count": 5},
+                                {"key": "L40S", "doc_count": 2},
+                            ],
+                        },
+                    },
+                    {
+                        "key": "project",
+                        "doc_count": 19,
+                        "values": {
+                            "doc_count_error_upper_bound": 0,
+                            "sum_other_doc_count": 0,
+                            "buckets": [
+                                {"key": "rhelai", "doc_count": 1},
+                                {"key": "rhosai", "doc_count": 2},
+                            ],
+                        },
+                    },
+                ]
+            },
+        )
+        fake_crucible.elastic.set_query(
+            "param",
+            aggregation_list={
+                "key": [
+                    {
+                        "key": "bucket",
+                        "doc_count": 25,
+                        "values": {
+                            "doc_count_error_upper_bound": 0,
+                            "sum_other_doc_count": 0,
+                            "buckets": [{"key": 200, "doc_count": 30}],
+                        },
+                    },
+                ]
+            },
+        )
+        fake_crucible.elastic.set_query(
+            "run",
+            aggregation_list={
+                "begin": [{"key": 123456789, "doc_count": 1}],
+                "benchmark": [{"key": "ilab", "doc_count": 25}],
+                "desc": [],
+                "email": [
+                    {"key": "me@example.com", "doc_count": 10},
+                    {"key": "you@example.com", "doc_count": 15},
+                ],
+                "end": [{"key": 1234, "doc_count": 10}],
+                "harness": [],
+                "host": [
+                    {"key": "one.example.com", "doc_count": 5},
+                    {"key": "two.example.com", "doc_count": 20},
+                ],
+                "id": [],
+                "name": [],
+                "source": [],
+            },
+        )
+        filters = await fake_crucible.get_run_filters()
+
+        # Array ordering is not reliable, so we need to sort
+        assert sorted(filters.keys()) == ["param", "run", "tag"]
+        assert sorted(filters["tag"].keys()) == ["accelerator", "project"]
+        assert sorted(filters["param"].keys()) == ["bucket"]
+        assert sorted(filters["run"].keys()) == ["benchmark", "email", "host"]
+        assert sorted(filters["tag"]["accelerator"]) == ["A100", "L40S"]
+        assert sorted(filters["param"]["bucket"]) == [200]
+        assert sorted(filters["run"]["benchmark"]) == ["ilab"]
+        assert sorted(filters["run"]["email"]) == ["me@example.com", "you@example.com"]
+        assert sorted(filters["run"]["host"]) == ["one.example.com", "two.example.com"]

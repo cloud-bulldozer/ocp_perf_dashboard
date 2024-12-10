@@ -22,53 +22,50 @@ class FakeAsyncElasticsearch(AsyncElasticsearch):
 
     # Testing helpers to manage fake searches
     def set_query(
-        self, root_index: str, data: list[dict[str, Any]], version: int = 7
+        self,
+        root_index: str,
+        hit_list: Optional[list[dict[str, Any]]] = None,
+        aggregation_list: Optional[dict[str, Any]] = None,
+        version: int = 7,
     ):
         ver = f"v{version:d}dev"
         index = f"cdm{ver}-{root_index}"
         hits = []
-        for d in data:
-            source = d
-            source["cdm"] = {"ver": ver}
-            hits.append(
-                {
-                    "_index": index,
-                    "_id": "random_string",
-                    "_score": 1.0,
-                    "_source": source,
+        aggregations = None
+        if hit_list:
+            for d in hit_list:
+                source = d
+                source["cdm"] = {"ver": ver}
+                hits.append(
+                    {
+                        "_index": index,
+                        "_id": "random_string",
+                        "_score": 1.0,
+                        "_source": source,
+                    }
+                )
+        if aggregation_list:
+            aggregations = {
+                k: {
+                    "doc_count_error_upper_bound": 0,
+                    "sum_other_doc_count": 0,
+                    "buckets": v,
                 }
-            )
+                for k, v in aggregation_list.items()
+            }
         self.data[index] = {
             "took": 1,
             "timed_out": False,
             "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
             "hits": {
-                "total": {"value": len(data), "relation": "eq"},
+                "total": {"value": len(hits), "relation": "eq"},
                 "max_score": 1.0,
                 "hits": hits,
             },
         }
-
-    # Testing helpers to manage fake aggregations
-    #
-    # TODO: how much Opensearch boilerplate (score, etc) can reasonably be
-    # factored out into this method?
-    def set_aggregate(self, index: str, data: dict[str, Any]):
-        self.data[index] = {
-            "took": 1,
-            "timed_out": False,
-            "_shards": {"total": 1, "successful": 1, "skipped": 0, "failed": 0},
-            "hits": {
-                "total": {"value": len(data), "relation": "eq"},
-                "max_score": 1.0,
-                "hits": {
-                    "total": {"value": 10000, "relation": "gte"},
-                    "max_score": None,
-                    "hits": [],
-                },
-            },
-            "aggregations": data,
-        }
+        if aggregations:
+            print(f"AGGREGATIONS => {aggregations}")
+            self.data[index]["aggregations"] = aggregations
 
     # Faked AsyncElasticsearch methods
     async def close(self):
