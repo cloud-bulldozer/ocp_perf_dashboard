@@ -1,12 +1,24 @@
+from dataclasses import dataclass
 from typing import Any, Optional, Union
 
 from elasticsearch import AsyncElasticsearch
+
+
+@dataclass
+class Request:
+    index: str
+    body: dict[str, Any]
+    doc_type: str
+    params: Any
+    headers: Any
+    kwargs: dict[str, Any]
 
 
 class FakeAsyncElasticsearch(AsyncElasticsearch):
     hosts: Union[str, list[str]]
     args: dict[str, Any]
     closed: bool
+    requests: list[Request]
 
     # This fake doesn't try to mimic Opensearch query and aggregation logic:
     # instead, the "data" is pre-loaded with a JSON response body that will
@@ -19,6 +31,7 @@ class FakeAsyncElasticsearch(AsyncElasticsearch):
         self.args = kwargs
         self.closed = False
         self.data = {}
+        self.requests = []
 
     # Testing helpers to manage fake searches
     def set_query(
@@ -64,7 +77,6 @@ class FakeAsyncElasticsearch(AsyncElasticsearch):
             },
         }
         if aggregations:
-            print(f"AGGREGATIONS => {aggregations}")
             self.data[index]["aggregations"] = aggregations
 
     # Faked AsyncElasticsearch methods
@@ -80,6 +92,16 @@ class FakeAsyncElasticsearch(AsyncElasticsearch):
     async def search(
         self, body=None, index=None, doc_type=None, params=None, headers=None, **kwargs
     ):
+        self.requests.append(
+            Request(
+                index=index,
+                body=body,
+                doc_type=doc_type,
+                params=params,
+                headers=headers,
+                kwargs=kwargs,
+            )
+        )
         if index in self.data:
             target = self.data[index]
             del self.data[index]
