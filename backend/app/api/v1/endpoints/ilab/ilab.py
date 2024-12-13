@@ -8,9 +8,8 @@ configuration path "ilab.crucible".
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, Query
-
 from app.services.crucible_svc import CrucibleService, GraphList, Metric
+from fastapi import APIRouter, Depends, Query
 
 router = APIRouter()
 
@@ -30,6 +29,7 @@ async def crucible_svc():
     crucible = None
     try:
         crucible = CrucibleService(CONFIGPATH)
+        await crucible.detect_cdm()
         yield crucible
     finally:
         if crucible:
@@ -143,6 +143,7 @@ async def runs(
         Optional[str],
         Query(description="End time for search", examples=["2020-11-10"]),
     ] = None,
+    undated: Annotated[bool, Query(description="Don't filter on dates")] = False,
     filter: Annotated[
         Optional[list[str]],
         Query(
@@ -161,7 +162,10 @@ async def runs(
         Query(description="Page offset to start", examples=[10]),
     ] = 0,
 ):
-    if start_date is None and end_date is None:
+    if undated:
+        start = None
+        end = None
+    elif start_date is None and end_date is None:
         now = datetime.now(timezone.utc)
         start = now - timedelta(days=30)
         end = now
