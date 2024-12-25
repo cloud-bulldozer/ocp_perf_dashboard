@@ -188,6 +188,7 @@ export const applyOCPDateFilter =
   (start_date, end_date, navigate) => (dispatch) => {
     dispatch(setOCPDateFilter(start_date, end_date, navigate));
     dispatch(fetchOCPJobs());
+    dispatch(buildFilterData());
   };
 export const setFilterFromURL = (searchParams) => ({
   type: TYPES.SET_OCP_APPLIED_FILTERS,
@@ -300,6 +301,6 @@ export const buildFilterData = () => async (dispatch, getState) => {
       dispatch(setOCPCatFilters(activeFilter));
     }
   } catch (error) {
-    console.log(error);
+    dispatch(showFailureToast());
   }
 };
