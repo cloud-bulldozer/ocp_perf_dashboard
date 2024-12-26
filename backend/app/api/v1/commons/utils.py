@@ -113,3 +113,15 @@ def buildAggregateQuery():
         obj = {x: {"terms": {"field": y}}}
         aggregate.update(obj)
     return aggregate
+
+
+def buildReleaseStreamFilter(input_array):
+    mapped_array = []
+    for item in input_array:
+        # Find the first matching key in the map
+        match = next(
+            (value for key, value in RELEASE_STREAM_DICT.items() if key in item),
+            "Stable",
+        )
+        mapped_array.append(match)
+    return list(set(mapped_array))
