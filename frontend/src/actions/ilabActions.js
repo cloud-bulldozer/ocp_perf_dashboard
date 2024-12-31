@@ -240,7 +240,7 @@ export const fetchGraphData = (uid) => async (dispatch, getState) => {
       graphs,
     });
     if (response.status === 200) {
-      response.data.layout["width"] = 1500;
+      // response.data.layout["width"] = 1500;
       copyData.push({
         uid,
         data: response.data.data,
