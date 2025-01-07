@@ -90,9 +90,11 @@ def build_sort_terms(sort_string: str) -> list[dict[str, str]]:
     return sort_terms
 
 
-def buildAggregateQuery():
+def buildAggregateQuery(category):
     aggregate = {}
-    for x, y in constants.FIELD_CONSTANT_DICT.items():
+    category_data = getattr(constants, category)
+    # category_data = constants[category]
+    for x, y in category_data.items():
         obj = {x: {"terms": {"field": y}}}
         aggregate.update(obj)
     return aggregate
@@ -103,7 +105,11 @@ def buildReleaseStreamFilter(input_array):
     for item in input_array:
         # Find the first matching key in the map
         match = next(
-            (value for key, value in RELEASE_STREAM_DICT.items() if key in item),
+            (
+                value
+                for key, value in constants.RELEASE_STREAM_DICT.items()
+                if key in item
+            ),
             "Stable",
         )
         mapped_array.append(match)
