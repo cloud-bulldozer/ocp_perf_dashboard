@@ -53,9 +53,9 @@ def getBuild(job):
 def getReleaseStream(row):
     releaseStream = next(
         (
-            value
-            for key, value in constants.RELEASE_STREAM_DICT.items()
-            if key in row["releaseStream"]
+            v
+            for k, v in constants.RELEASE_STREAM_DICT.items()
+            if k in row["releaseStream"]
         ),
         "Stable",
     )
@@ -93,7 +93,6 @@ def build_sort_terms(sort_string: str) -> list[dict[str, str]]:
 def buildAggregateQuery(category):
     aggregate = {}
     category_data = getattr(constants, category)
-    # category_data = constants[category]
     for x, y in category_data.items():
         obj = {x: {"terms": {"field": y}}}
         aggregate.update(obj)
