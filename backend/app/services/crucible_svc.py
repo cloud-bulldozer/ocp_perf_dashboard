@@ -87,7 +87,7 @@ class Point:
     value: float
 
 
-colors = [
+COLOR_NAMES = [
     "black",
     "aqua",
     "blue",
@@ -1104,10 +1104,12 @@ class CrucibleService:
                 s = self._normalize_date(start)
                 results["startDate"] = datetime.fromtimestamp(
                     s / 1000.0, tz=timezone.utc
-                )
+                ).isoformat()
             if end:
                 e = self._normalize_date(end)
-                results["endDate"] = datetime.fromtimestamp(e / 1000.0, tz=timezone.utc)
+                results["endDate"] = datetime.fromtimestamp(
+                    e / 1000.0, tz=timezone.utc
+                ).isoformat()
 
             if s and e and s > e:
                 raise HTTPException(
@@ -1345,7 +1347,6 @@ class CrucibleService:
             sample = s["sample"]
             sample["iteration"] = s["iteration"]["num"]
             sample["primary_metric"] = s["iteration"]["primary-metric"]
-            sample["status"] = s["iteration"]["status"]
             samples.append(sample)
         return samples
 
@@ -1400,61 +1401,6 @@ class CrucibleService:
             body.append(period)
         return body
 
-    async def get_timeline(self, run: str, **kwargs) -> dict[str, Any]:
-        """Report the relative timeline of a run
-
-        With nested object lists, show runs to iterations to samples to
-        periods.
-
-        Args:
-            run: run ID
-            kwargs: additional OpenSearch parameters
-        """
-        itr = await self.search(
-            index="iteration",
-            filters=[{"term": {"run.id": run}}],
-            **kwargs,
-            ignore_unavailable=True,
-        )
-        sam = await self.search(
-            index="sample",
-            filters=[{"term": {"run.id": run}}],
-            **kwargs,
-            ignore_unavailable=True,
-        )
-        per = await self.search(
-            index="period",
-            filters=[{"term": {"run.id": run}}],
-            **kwargs,
-            ignore_unavailable=True,
-        )
-        samples = defaultdict(list)
-        periods = defaultdict(list)
-
-        for s in self._hits(sam):
-            samples[s["iteration"]["id"]].append(s)
-        for p in self._hits(per):
-            periods[p["sample"]["id"]].append(p)
-
-        iterations = []
-        robj = {"id": run, "iterations": iterations}
-        body = {"run": robj}
-        for i in self._hits(itr):
-            if "begin" not in robj:
-                robj["begin"] = self._format_timestamp(i["run"]["begin"])
-                robj["end"] = self._format_timestamp(i["run"]["end"])
-            iteration = i["iteration"]
-            iterations.append(iteration)
-            iteration["samples"] = []
-            for s in samples.get(iteration["id"], []):
-                sample = s["sample"]
-                sample["periods"] = []
-                for pr in periods.get(sample["id"], []):
-                    period = self._format_period(pr["period"])
-                    sample["periods"].append(period)
-                iteration["samples"].append(sample)
-        return body
-
     async def get_metrics_list(self, run: str, **kwargs) -> dict[str, Any]:
         """Return a list of metrics available for a run
 
@@ -1494,12 +1440,14 @@ class CrucibleService:
             if name in met:
                 record = met[name]
             else:
-                record = {"periods": [], "breakouts": defaultdict(set)}
+                record = {"periods": [], "breakouts": defaultdict(list)}
                 met[name] = record
             if "period" in h:
                 record["periods"].append(h["period"]["id"])
             for n, v in desc["names"].items():
-                record["breakouts"][n].add(v)
+                # mimic a set, since the set type doesn't serialize
+                if v not in record["breakouts"][n]:
+                    record["breakouts"][n].append(v)
         return met
 
     async def get_metric_breakouts(
@@ -1555,8 +1503,8 @@ class CrucibleService:
                 f"Metric name {metric_name} not found for run {run}",
             )
         classes = set()
-        response = {"label": metric, "class": classes}
-        breakouts = defaultdict(set)
+        response = {"label": metric}
+        breakouts = defaultdict(list)
         pl = set()
         for m in self._hits(metrics):
             desc = m["metric_desc"]
@@ -1567,11 +1515,13 @@ class CrucibleService:
             if "period" in m:
                 pl.add(m["period"]["id"])
             for n, v in desc["names"].items():
-                breakouts[n].add(v)
+                if v not in breakouts[n]:
+                    breakouts[n].append(v)
         # We want to help filter a consistent summary, so only show those
         # names with more than one value.
         if len(pl) > 1:
-            response["periods"] = pl
+            response["periods"] = sorted(pl)
+        response["class"] = sorted(classes)
         response["breakouts"] = {n: v for n, v in breakouts.items() if len(v) > 1}
         self.logger.info("Processing took %.3f seconds", time.time() - start)
         return response
@@ -1634,6 +1584,9 @@ class CrucibleService:
         filters.extend(await self._build_timestamp_range_filters(periods))
 
         response = []
+
+        # NOTE -- _get_metric_ids already failed if we found multiple IDs but
+        # aggregation wasn't specified.
         if len(ids) > 1:
             # Find the minimum sample interval of the selected metrics
             aggdur = await self.search(
@@ -1961,9 +1914,9 @@ class CrucibleService:
             if g.color:
                 color = g.color
             else:
-                color = colors[cindex]
+                color = COLOR_NAMES[cindex]
                 cindex += 1
-                if cindex >= len(colors):
+                if cindex >= len(COLOR_NAMES):
                     cindex = 0
             graphitem = {
                 "x": x,

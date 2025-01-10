@@ -1,4 +1,6 @@
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timezone
+import json
 
 from elasticsearch import AsyncElasticsearch
 from fastapi import HTTPException
@@ -6,7 +8,13 @@ import pytest
 from vyper import Vyper
 
 import app.config
-from app.services.crucible_svc import CommonParams, CrucibleService, Parser
+from app.services.crucible_svc import (
+    CommonParams,
+    CrucibleService,
+    Graph,
+    GraphList,
+    Parser,
+)
 from tests.fake_elastic import FakeAsyncElasticsearch, Request
 
 
@@ -664,7 +672,7 @@ class TestCrucible:
 
         fake_crucible.elastic.set_query(
             "tag",
-            aggregation_list={
+            aggregations={
                 "key": [
                     {
                         "key": "topology",
@@ -704,7 +712,7 @@ class TestCrucible:
         )
         fake_crucible.elastic.set_query(
             "param",
-            aggregation_list={
+            aggregations={
                 "key": [
                     {
                         "key": "bucket",
@@ -720,7 +728,7 @@ class TestCrucible:
         )
         fake_crucible.elastic.set_query(
             "run",
-            aggregation_list={
+            aggregations={
                 "begin": [{"key": 123456789, "doc_count": 1}],
                 "benchmark": [{"key": "ilab", "doc_count": 25}],
                 "desc": [],
@@ -765,6 +773,162 @@ class TestCrucible:
         assert {"one", "two", "three"} == await fake_crucible._get_run_ids(
             "period", [{"term": {"period.name": "measurement"}}]
         )
+
+    async def test_get_runs_none(self, fake_crucible: CrucibleService):
+        """Test run summary"""
+        fake_crucible.elastic.set_query("run", [])
+        fake_crucible.elastic.set_query("iteration", [])
+        fake_crucible.elastic.set_query("tag", [])
+        fake_crucible.elastic.set_query("param", [])
+        assert {
+            "count": 0,
+            "offset": 0,
+            "results": [],
+            "sort": [],
+            "total": 0,
+        } == await fake_crucible.get_runs()
+
+    @pytest.mark.parametrize(
+        "args",
+        (
+            {},
+            {"size": 2, "offset": 1},
+            {"start": "2024-01-01"},
+            {"end": "2024-02-01"},
+            {"start": "2024-01-01", "end": "2025-01-01"},
+            {"sort": ["end:desc"]},
+            {"filter": ["tag:a=42", "param:z=xyzzy", "run:benchmark=test"]},
+        ),
+    )
+    async def test_get_runs_simple(self, args, fake_crucible: CrucibleService):
+        """Test run summary"""
+        fake_crucible.elastic.set_query(
+            "run",
+            [{"run": {"id": "r1", "begin": "0", "end": "5000", "benchmark": "test"}}],
+        )
+        fake_crucible.elastic.set_query(
+            "iteration",
+            [
+                {
+                    "run": {"id": "r1"},
+                    "iteration": {
+                        "id": "i1",
+                        "num": 1,
+                        "primary-period": "tp",
+                        "primary-metric": "src::tst1",
+                        "status": "fail",
+                    },
+                },
+                {
+                    "run": {"id": "r1"},
+                    "iteration": {
+                        "id": "i2",
+                        "num": 2,
+                        "primary-period": "tp",
+                        "primary-metric": "src::tst2",
+                        "status": "pass",
+                    },
+                },
+            ],
+        )
+        fake_crucible.elastic.set_query(
+            "tag", [{"run": {"id": "r1"}, "tag": {"name": "a", "val": 42}}], repeat=2
+        )
+        fake_crucible.elastic.set_query(
+            "param",
+            [
+                {
+                    "run": {"id": "r1"},
+                    "iteration": {"id": "i1"},
+                    "param": {"arg": "b", "val": "cde"},
+                },
+                {
+                    "run": {"id": "r1"},
+                    "iteration": {"id": "i1"},
+                    "param": {"arg": "z", "val": "xyzzy"},
+                },
+                {
+                    "run": {"id": "r1"},
+                    "iteration": {"id": "i2"},
+                    "param": {"arg": "b", "val": "cde"},
+                },
+                {
+                    "run": {"id": "r1"},
+                    "iteration": {"id": "i2"},
+                    "param": {"arg": "x", "val": "plugh"},
+                },
+            ],
+            repeat=2,
+        )
+        expected = {
+            "count": 1,
+            "offset": 0,
+            "results": [
+                {
+                    "begin": "0",
+                    "begin_date": "1970-01-01 00:00:00+00:00",
+                    "benchmark": "test",
+                    "end": "5000",
+                    "end_date": "1970-01-01 00:00:05+00:00",
+                    "id": "r1",
+                    "iterations": [
+                        {
+                            "iteration": 1,
+                            "params": defaultdict(
+                                None,
+                                {
+                                    "b": "cde",
+                                    "z": "xyzzy",
+                                },
+                            ),
+                            "primary_metric": "src::tst1",
+                            "primary_period": "tp",
+                            "status": "fail",
+                        },
+                        {
+                            "iteration": 2,
+                            "params": defaultdict(
+                                None,
+                                {
+                                    "b": "cde",
+                                    "x": "plugh",
+                                },
+                            ),
+                            "primary_metric": "src::tst2",
+                            "primary_period": "tp",
+                            "status": "pass",
+                        },
+                    ],
+                    "params": {
+                        "b": "cde",
+                    },
+                    "primary_metrics": {"src::tst1", "src::tst2"},
+                    "status": "fail",
+                    "tags": defaultdict(None, {"a": 42}),
+                },
+            ],
+            "sort": [],
+            "total": 1,
+        }
+        if "size" in args:
+            expected["size"] = args["size"]
+        if args.get("offset"):
+            expected["offset"] = args["offset"]
+        if args.get("start"):
+            expected["startDate"] = (
+                datetime.fromisoformat(args["start"])
+                .astimezone(tz=timezone.utc)
+                .isoformat()
+            )
+        if args.get("end"):
+            expected["endDate"] = (
+                datetime.fromisoformat(args["end"])
+                .astimezone(tz=timezone.utc)
+                .isoformat()
+            )
+        if args.get("sort"):
+            expected["sort"] = args["sort"]
+        assert expected == await fake_crucible.get_runs(**args)
 
     async def test_get_tags(self, fake_crucible: CrucibleService):
         """Get tags for a run ID"""
@@ -905,3 +1069,936 @@ class TestCrucible:
             ],
         )
         assert iterations == await fake_crucible.get_iterations("one")
+
+    async def test_get_samples_none(self, fake_crucible: CrucibleService):
+        """Test error when neither run nor iteration is specified"""
+        with pytest.raises(HTTPException) as exc:
+            await fake_crucible.get_samples()
+        assert 400 == exc.value.status_code
+        assert (
+            "A sample query requires either a run or iteration ID" == exc.value.detail
+        )
+
+    @pytest.mark.parametrize("ids", (("one", None), (None, 1)))
+    async def test_get_samples(self, fake_crucible: CrucibleService, ids):
+        """Get samples for a run ID"""
+        samples = [
+            {
+                "num": "1",
+                "path": None,
+                "id": "one",
+                "status": "pass",
+                "primary_metric": "pm",
+                "primary_period": "m",
+                "iteration": 1,
+            },
+            {
+                "id": "two",
+                "num": "2",
+                "path": None,
+                "status": "pass",
+                "primary_metric": "pm",
+                "primary_period": "m",
+                "iteration": 1,
+            },
+            {
+                "id": "three",
+                "num": "3",
+                "path": None,
+                "status": "pass",
+                "primary_metric": "pm",
+                "primary_period": "m",
+                "iteration": 1,
+            },
+        ]
+        fake_crucible.elastic.set_query(
+            "sample",
+            [
+                {
+                    "run": {"id": "one"},
+                    "iteration": {
+                        "primary-metric": "pm",
+                        "primary-period": "m",
+                        "num": 1,
+                    },
+                    "sample": s,
+                }
+                for s in samples
+            ],
+        )
+        assert samples == await fake_crucible.get_samples(*ids)
+
+    async def test_get_periods_none(self, fake_crucible: CrucibleService):
+        """Test error when neither run, iteration, nor sample is specified"""
+        with pytest.raises(HTTPException) as exc:
+            await fake_crucible.get_periods()
+        assert 400 == exc.value.status_code
+        assert (
+            "A period query requires a run, iteration, or sample ID" == exc.value.detail
+        )
+
+    @pytest.mark.parametrize(
+        "ids", (("one", None, None), (None, 1, None), (None, None, 1))
+    )
+    async def test_get_periods(self, fake_crucible: CrucibleService, ids):
+        """Get samples for a run ID"""
+        periods = [
+            {
+                "begin": "2024-12-05 21:16:31.046000+00:00",
+                "end": "2024-12-05 21:40:31.166000+00:00",
+                "id": "306C8A78-B352-11EF-8E37-AD212D0A0B9F",
+                "name": "measurement",
+                "iteration": 1,
+                "sample": 1,
+                "primary_metric": "ilab::sdg-samples-sec",
+                "status": "pass",
+            }
+        ]
+        fake_crucible.elastic.set_query(
+            "period",
+            [
+                {
+                    "run": {"id": "one"},
+                    "iteration": {
+                        "primary-metric": p["primary_metric"],
+                        "primary-period": "measurement",
+                        "num": 1,
+                        "status": p["status"],
+                    },
+                    "sample": {"num": 1, "status": p["status"], "path": None},
+                    "period": {
+                        "id": p["id"],
+                        "name": p["name"],
+                        "begin": str(
+                            int(datetime.fromisoformat(p["begin"]).timestamp() * 1000)
+                        ),
+                        "end": str(
+                            int(datetime.fromisoformat(p["end"]).timestamp() * 1000)
+                        ),
+                        "primary-metric": p["primary_metric"],
+                        "status": p["status"],
+                    },
+                }
+                for p in periods
+            ],
+        )
+        assert periods == await fake_crucible.get_periods(*ids)
+
+    async def test_get_metrics_list(self, fake_crucible: CrucibleService):
+        """Get samples for a run ID"""
+        metrics = {
+            "source1::type1": {
+                "periods": [],
+                "breakouts": {"name1": ["value1", "value2"]},
+            },
+            "source1::type2": {"periods": ["p1", "p2"], "breakouts": {}},
+        }
+        query = [
+            {
+                "run": {"id": "one"},
+                "metric_desc": {
+                    "source": "source1",
+                    "type": "type1",
+                    "names": {"name1": "value1"},
+                },
+            },
+            {
+                "run": {"id": "one"},
+                "metric_desc": {
+                    "source": "source1",
+                    "type": "type1",
+                    "names": {"name1": "value1"},
+                },
+            },
+            {
+                "run": {"id": "one"},
+                "metric_desc": {
+                    "source": "source1",
+                    "type": "type1",
+                    "names": {"name1": "value2"},
+                },
+            },
+            {
+                "run": {"id": "one"},
+                "metric_desc": {
+                    "source": "source1",
+                    "type": "type1",
+                    "names": {"name1": "value2"},
+                },
+            },
+            {
+                "run": {"id": "one"},
+                "period": {"id": "p1"},
+                "metric_desc": {"source": "source1", "type": "type2", "names": {}},
+            },
+            {
+                "run": {"id": "one"},
+                "period": {"id": "p2"},
+                "metric_desc": {"source": "source1", "type": "type2", "names": {}},
+            },
+        ]
+        fake_crucible.elastic.set_query("metric_desc", query)
+        result = await fake_crucible.get_metrics_list("one")
+
+        # NOTE: the method returns a defaultdict, which doesn't compare to a
+        # dict but "in the real world" serializes the same: so we just
+        # serialize and deserialize to mimic the actual API behavior.
+        result = json.loads(json.dumps(result))
+        assert metrics == result
+
+    async def test_get_metric_breakout_none(self, fake_crucible: CrucibleService):
+        """Test error when the metric isn't found"""
+        fake_crucible.elastic.set_query("metric_desc", [])
+        with pytest.raises(HTTPException) as exc:
+            await fake_crucible.get_metric_breakouts(
+                "one", metric="source1::type1", names=[], periods=[]
+            )
+        assert 400 == exc.value.status_code
+        assert "Metric name source1::type1 not found for run one" == exc.value.detail
+
+    @pytest.mark.parametrize("period", (True, False))
+    async def test_get_metric_breakout(self, period, fake_crucible: CrucibleService):
+        """Get samples for a run ID"""
+        metrics = {
+            "label": "source1::type1",
+            "class": ["classless", "classy"],
+            "type": "type1",
+            "source": "source1",
+            "breakouts": {"name1": ["value1", "value2"]},
+        }
+        md1 = {
+            "run": {"id": "one"},
+            "metric_desc": {
+                "source": "source1",
+                "type": "type1",
+                "class": "classy",
+                "names": {"name1": "value1"},
+            },
+        }
+        md2 = {
+            "run": {"id": "one"},
+            "metric_desc": {
+                "source": "source1",
+                "type": "type1",
+                "names": {"name1": "value2"},
+            },
+        }
+        if period:
+            metrics["periods"] = ["p1", "p2"]
+            md1["period"] = {"id": "p1"}
+            md2["period"] = {"id": "p2"}
+        query = [
+            md1,
+            md2,
+            {
+                "run": {"id": "one"},
+                "metric_desc": {
+                    "source": "source1",
+                    "type": "type1",
+                    "class": "classless",
+                    "names": {"name1": "value1"},
+                },
+            },
+            {
+                "run": {"id": "one"},
+                "metric_desc": {
+                    "source": "source1",
+                    "type": "type1",
+                    "names": {"name1": "value2"},
+                },
+            },
+        ]
+        fake_crucible.elastic.set_query("metric_desc", query)
+        result = await fake_crucible.get_metric_breakouts(
+            "one", metric="source1::type1", names=[], periods=[]
+        )
+
+        # NOTE: the method returns a defaultdict, which doesn't compare to a
+        # dict but "in the real world" serializes the same: so we just
+        # serialize and deserialize to mimic the actual API behavior.
+        result = json.loads(json.dumps(result))
+        assert metrics == result
+
+    async def test_metrics_data_one_noagg(self, fake_crucible: CrucibleService):
+        """Return data samples for a single metric"""
+
+        fake_crucible.elastic.set_query(
+            "metric_desc",
+            [{"metric_desc": {"id": "one-metric", "names": {}}}],
+        )
+        fake_crucible.elastic.set_query(
+            "metric_data",
+            [
+                {
+                    "metric_desc": {"id": "one-metric"},
+                    "metric_data": {
+                        "begin": "1726165775123",
+                        "end": "1726165789213",
+                        "duration": 14100,
+                        "value": 9.35271216694379,
+                    },
+                },
+                {
+                    "metric_desc": {"id": "one-metric"},
+                    "metric_data": {
+                        "begin": "1726165790000",
+                        "end": "1726165804022",
+                        "duration": 14022,
+                        "value": 9.405932330557683,
+                    },
+                },
+            ],
+        )
+        expected = [
+            {
+                "begin": "2024-09-12 18:29:35.123000+00:00",
+                "duration": 14.1,
+                "end": "2024-09-12 18:29:49.213000+00:00",
+                "value": 9.35271216694379,
+            },
+            {
+                "begin": "2024-09-12 18:29:50+00:00",
+                "duration": 14.022,
+                "end": "2024-09-12 18:30:04.022000+00:00",
+                "value": 9.405932330557683,
+            },
+        ]
+        assert expected == await fake_crucible.get_metrics_data("runid", "source::type")
+        assert fake_crucible.elastic.requests == [
+            Request(
+                "cdmv7dev-metric_desc",
+                {
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {
+                                    "term": {
+                                        "run.id": "runid",
+                                    },
+                                },
+                                {
+                                    "term": {
+                                        "metric_desc.source": "source",
+                                    },
+                                },
+                                {
+                                    "term": {
+                                        "metric_desc.type": "type",
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    "size": 262144,
+                },
+                kwargs={"ignore_unavailable": True},
+            ),
+            Request(
+                "cdmv7dev-metric_data",
+                {
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {
+                                    "terms": {
+                                        "metric_desc.id": [
+                                            "one-metric",
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    "size": 262144,
+                },
+            ),
+        ]
+
+    @pytest.mark.parametrize("count", (0, 2))
+    async def test_metrics_data_agg(self, count, fake_crucible):
+        """Return data samples for aggregated metrics"""
+
+        fake_crucible.elastic.set_query(
+            "metric_desc",
+            [
+                {"metric_desc": {"id": "one-metric", "names": {}}},
+                {"metric_desc": {"id": "two-metric", "names": {}}},
+            ],
+        )
+        fake_crucible.elastic.set_query(
+            "metric_data",
+            aggregations={
+                "duration": {
+                    "count": count,
+                    "min": 14022,
+                    "max": 14100,
+                    "avg": 14061,
+                    "sum": 28122,
+                }
+            },
+        )
+        if count:
+            fake_crucible.elastic.set_query(
+                "metric_data",
+                aggregations={
+                    "interval": [
+                        {"key": 1726165789213, "value": {"value": 9.35271216694379}},
+                        {"key": 1726165804022, "value": {"value": 9.405932330557683}},
+                    ]
+                },
+            )
+            expected = [
+                {
+                    "begin": "2024-09-12 18:29:35.191000+00:00",
+                    "duration": 14.022,
+                    "end": "2024-09-12 18:29:49.213000+00:00",
+                    "value": 9.35271216694379,
+                },
+                {
+                    "begin": "2024-09-12 18:29:50+00:00",
+                    "duration": 14.022,
+                    "end": "2024-09-12 18:30:04.022000+00:00",
+                    "value": 9.405932330557683,
+                },
+            ]
+        else:
+            expected = []
+        assert expected == await fake_crucible.get_metrics_data(
+            "r1", "source::type", aggregate=True
+        )
+        expected_requests = [
+            Request(
+                "cdmv7dev-metric_desc",
+                {
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {
+                                    "term": {
+                                        "run.id": "r1",
+                                    },
+                                },
+                                {
+                                    "term": {
+                                        "metric_desc.source": "source",
+                                    },
+                                },
+                                {
+                                    "term": {
+                                        "metric_desc.type": "type",
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    "size": 262144,
+                },
+                kwargs={"ignore_unavailable": True},
+            ),
+            Request(
+                "cdmv7dev-metric_data",
+                {
+                    "aggs": {
+                        "duration": {
+                            "stats": {
+                                "field": "metric_data.duration",
+                            },
+                        },
+                    },
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {
+                                    "terms": {
+                                        "metric_desc.id": [
+                                            "one-metric",
+                                            "two-metric",
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    "size": 0,
+                },
+            ),
+        ]
+        if count:
+            expected_requests.append(
+                Request(
+                    "cdmv7dev-metric_data",
+                    {
+                        "aggs": {
+                            "interval": {
+                                "aggs": {
+                                    "value": {
+                                        "sum": {
+                                            "field": "metric_data.value",
+                                        },
+                                    },
+                                },
+                                "histogram": {
+                                    "field": "metric_data.end",
+                                    "interval": 14022,
+                                },
+                            },
+                        },
+                        "query": {
+                            "bool": {
+                                "filter": [
+                                    {
+                                        "terms": {
+                                            "metric_desc.id": [
+                                                "one-metric",
+                                                "two-metric",
+                                            ],
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                        "size": 0,
+                    },
+                ),
+            )
+        assert fake_crucible.elastic.requests == expected_requests
+
+    async def test_metrics_summary(self, fake_crucible: CrucibleService):
+        """Return data summary for a metrics"""
+
+        fake_crucible.elastic.set_query(
+            "metric_desc",
+            [
+                {"metric_desc": {"id": "one-metric", "names": {"a": "1"}}},
+            ],
+        )
+        expected = {
+            "count": 5,
+            "min": 9.35271216694379,
+            "max": 9.405932330557683,
+            "avg": 9.379322249,
+            "sum": 18.758644498,
+        }
+        fake_crucible.elastic.set_query("metric_data", aggregations={"score": expected})
+        assert expected == await fake_crucible.get_metrics_summary(
+            "runid", "one-metric::type", ["a=1"]
+        )
+        assert fake_crucible.elastic.requests == [
+            Request(
+                "cdmv7dev-metric_desc",
+                {
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {
+                                    "term": {
+                                        "run.id": "runid",
+                                    },
+                                },
+                                {
+                                    "term": {
+                                        "metric_desc.source": "one-metric",
+                                    },
+                                },
+                                {
+                                    "term": {
+                                        "metric_desc.type": "type",
+                                    },
+                                },
+                                {"term": {"metric_desc.names.a": "1"}},
+                            ],
+                        },
+                    },
+                    "size": 262144,
+                },
+                kwargs={"ignore_unavailable": True},
+            ),
+            Request(
+                "cdmv7dev-metric_data",
+                {
+                    "aggs": {"score": {"stats": {"field": "metric_data.value"}}},
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {
+                                    "terms": {
+                                        "metric_desc.id": [
+                                            "one-metric",
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    "size": 0,
+                },
+            ),
+        ]
+
+    @pytest.mark.parametrize(
+        "runs,param_idx,periods,period_idx,title",
+        (
+            ([], 0, [], 0, "source::type"),
+            (["r2", "r1"], 0, [], 0, "source::type {run 2}"),
+            ([], 0, ["p1"], 0, "source::type (n=42)"),
+            ([], 1, ["p1"], 1, "source::type"),
+            ([], 1, ["p1"], 2, "source::type"),
+        ),
+    )
+    async def test_graph_title_no_query(
+        self,
+        runs,
+        param_idx,
+        periods,
+        period_idx,
+        title,
+        fake_crucible: CrucibleService,
+    ):
+        """Test generation of default metric titles"""
+
+        param_runs = [
+            {"r1": {"i1": {"n": "42"}, "i2": {"n": "31"}}},
+            {"r1": {"i1": {"n": "42"}, "i2": {"n": "42"}}},
+        ][param_idx]
+        period_runs = [
+            {"r1": {"i1": {"p1"}, "i2": {"p2"}}},
+            {"r1": {"i1": {"p1"}}},
+            {"r1": {"i1": {"p2"}}},
+        ][period_idx]
+        name = await fake_crucible._graph_title(
+            "r1",
+            runs,
+            Graph(metric="source::type", periods=periods),
+            param_runs,
+            period_runs,
+        )
+        assert name == title
+
+    async def test_graph_title_query(self, fake_crucible: CrucibleService):
+        """Test generation of default metric titles"""
+
+        param_runs = {}
+        period_runs = {}
+        fake_crucible.elastic.set_query(
+            "param",
+            [
+                {
+                    "run": {"id": "r1"},
+                    "iteration": {"id": "i1"},
+                    "param": {"arg": "a", "val": "1"},
+                },
+            ],
+        )
+        fake_crucible.elastic.set_query(
+            "period",
+            [
+                {
+                    "run": {"id": "r1"},
+                    "iteration": {"id": "i1"},
+                    "period": {"id": "p1"},
+                },
+            ],
+        )
+        name = await fake_crucible._graph_title(
+            "r1",
+            [],
+            Graph(metric="source::type"),
+            param_runs,
+            period_runs,
+        )
+        assert name == "source::type"
+        assert fake_crucible.elastic.requests == [
+            Request(
+                "cdmv7dev-param",
+                {
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {
+                                    "term": {
+                                        "run.id": "r1",
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    "size": 262144,
+                },
+            ),
+            Request(
+                "cdmv7dev-period",
+                {
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {
+                                    "term": {
+                                        "run.id": "r1",
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    "size": 262144,
+                },
+            ),
+        ]
+
+    async def test_metrics_graph_norun(self, fake_crucible: CrucibleService):
+        with pytest.raises(HTTPException) as exc:
+            await fake_crucible.get_metrics_graph(
+                GraphList(
+                    name="graph",
+                    graphs=[Graph(metric="source::type", aggregate=True, title="test")],
+                )
+            )
+        assert exc.value.status_code == 400
+        assert exc.value.detail == "each graph request must have a run ID"
+
+    @pytest.mark.parametrize("count", (0, 2))
+    async def test_metrics_graph(self, count, fake_crucible: CrucibleService):
+        """Return graph for aggregated metrics"""
+
+        metrics = [{"metric_desc": {"id": "one-metric", "names": {}}}]
+        if count:
+            metrics.append({"metric_desc": {"id": "two-metric", "names": {}}})
+            fake_crucible.elastic.set_query(
+                "metric_data",
+                aggregations={
+                    "duration": {
+                        "count": count,
+                        "min": 14022,
+                        "max": 14100,
+                        "avg": 14061,
+                        "sum": 28122,
+                    }
+                },
+            )
+            fake_crucible.elastic.set_query(
+                "metric_data",
+                aggregations={
+                    "interval": [
+                        {"key": 1726165789213, "value": {"value": 9.35271216694379}},
+                        {"key": 1726165804022, "value": {"value": 9.405932330557683}},
+                    ]
+                },
+            )
+            expected = {
+                "data": [
+                    {
+                        "labels": {
+                            "x": "sample timestamp",
+                            "y": "samples / second",
+                        },
+                        "marker": {
+                            "color": "black",
+                        },
+                        "mode": "line",
+                        "name": "test",
+                        "type": "scatter",
+                        "x": [
+                            "2024-09-12 18:29:49.213000+00:00",
+                            "2024-09-12 18:30:03.234000+00:00",
+                            "2024-09-12 18:30:04.022000+00:00",
+                            "2024-09-12 18:30:18.043000+00:00",
+                        ],
+                        "y": [
+                            9.35271216694379,
+                            9.35271216694379,
+                            9.405932330557683,
+                            9.405932330557683,
+                        ],
+                        "yaxis": "y",
+                    },
+                ],
+                "layout": {
+                    "width": "1500",
+                    "yaxis": {
+                        "color": "black",
+                        "title": "source::type",
+                    },
+                },
+            }
+        else:
+            expected = {
+                "data": [
+                    {
+                        "labels": {
+                            "x": "sample timestamp",
+                            "y": "samples / second",
+                        },
+                        "marker": {
+                            "color": "black",
+                        },
+                        "mode": "line",
+                        "name": "test",
+                        "type": "scatter",
+                        "x": [
+                            "2024-09-12 18:29:49.213000+00:00",
+                            "2024-09-12 18:29:50.213000+00:00",
+                            "2024-09-12 18:30:04.022000+00:00",
+                            "2024-09-12 18:30:05.022000+00:00",
+                        ],
+                        "y": [
+                            9.35271216694379,
+                            9.35271216694379,
+                            9.405932330557683,
+                            9.405932330557683,
+                        ],
+                        "yaxis": "y",
+                    },
+                ],
+                "layout": {
+                    "width": "1500",
+                    "yaxis": {
+                        "color": "black",
+                        "title": "source::type",
+                    },
+                },
+            }
+            fake_crucible.elastic.set_query(
+                "metric_data",
+                [
+                    {
+                        "metric_data": {
+                            "begin": "1726165789213",
+                            "end": "1726165790213",
+                            "value": 9.35271216694379,
+                        }
+                    },
+                    {
+                        "metric_data": {
+                            "begin": "1726165804022",
+                            "end": "1726165805022",
+                            "value": 9.405932330557683,
+                        }
+                    },
+                ],
+            )
+        fake_crucible.elastic.set_query("metric_desc", metrics)
+
+        assert expected == await fake_crucible.get_metrics_graph(
+            GraphList(
+                run="r1",
+                name="graph",
+                graphs=[Graph(metric="source::type", aggregate=True, title="test")],
+            )
+        )
+        expected_requests = [
+            Request(
+                "cdmv7dev-metric_desc",
+                {
+                    "query": {
+                        "bool": {
+                            "filter": [
+                                {
+                                    "term": {
+                                        "run.id": "r1",
+                                    },
+                                },
+                                {
+                                    "term": {
+                                        "metric_desc.source": "source",
+                                    },
+                                },
+                                {
+                                    "term": {
+                                        "metric_desc.type": "type",
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                    "size": 262144,
+                },
+                kwargs={"ignore_unavailable": True},
+            ),
+        ]
+        if count:
+            expected_requests.extend(
+                [
+                    Request(
+                        "cdmv7dev-metric_data",
+                        {
+                            "aggs": {
+                                "duration": {
+                                    "stats": {
+                                        "field": "metric_data.duration",
+                                    },
+                                },
+                            },
+                            "query": {
+                                "bool": {
+                                    "filter": [
+                                        {
+                                            "terms": {
+                                                "metric_desc.id": [
+                                                    "one-metric",
+                                                    "two-metric",
+                                                ],
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                            "size": 0,
+                        },
+                    ),
+                    Request(
+                        "cdmv7dev-metric_data",
+                        {
+                            "aggs": {
+                                "interval": {
+                                    "aggs": {
+                                        "value": {
+                                            "sum": {
+                                                "field": "metric_data.value",
+                                            },
+                                        },
+                                    },
+                                    "histogram": {
+                                        "field": "metric_data.begin",
+                                        "interval": 14022,
+                                    },
+                                },
+                            },
+                            "query": {
+                                "bool": {
+                                    "filter": [
+                                        {
+                                            "terms": {
+                                                "metric_desc.id": [
+                                                    "one-metric",
+                                                    "two-metric",
+                                                ],
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                            "size": 0,
+                        },
+                    ),
+                ]
+            )
+        else:
+            expected_requests.append(
+                Request(
+                    "cdmv7dev-metric_data",
+                    {
+                        "query": {
+                            "bool": {
+                                "filter": [
+                                    {
+                                        "terms": {
+                                            "metric_desc.id": ["one-metric"],
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                        "size": 262144,
+                    },
+                ),
+            )
+        assert fake_crucible.elastic.requests == expected_requests
