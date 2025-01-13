@@ -74,3 +74,46 @@ def fillEncryptionType(row):
         return "None"
     else:
         return row["encryptionType"]
+
+
+async def getFilterData(start_datetime: date, end_datetime: date, configpath: str):
+    es = ElasticService(configpath=configpath)
+
+    aggregate = utils.buildAggregateQuery("OCP_FIELD_CONSTANT_DICT")
+
+    response = await es.filterPost(start_datetime, end_datetime, aggregate)
+    await es.close()
+
+    upstreamList = response["upstreamList"]
+
+    jobType = getJobType(upstreamList)
+    isRehearse = getIsRehearse(upstreamList)
+
+    jobTypeObj = {
+        "key": "jobType",
+        "value": jobType,
+        "name": "Job Type",
+    }
+    isRehearseObj = {"key": "isRehearse", "value": isRehearse, "name": "Rehearse"}
+
+    response["filterData"].append(jobTypeObj)
+    response["filterData"].append(isRehearseObj)
+
+    return {"filterData": response["filterData"], "summary": response["summary"]}
+
+
+def getJobType(upstreamList: list):
+    return list(
+        set(
+            [
+                "periodic" if "periodic" in item else "pull-request"
+                for item in upstreamList
+            ]
+        )
+    )
+
+
+def getIsRehearse(upstreamList: list):
+    return list(
+        set(["True" if "rehearse" in item else "False" for item in upstreamList])
+    )

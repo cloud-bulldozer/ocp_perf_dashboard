@@ -53,23 +53,15 @@ def getBuild(job):
 
 
 def getReleaseStream(row):
-    if row["releaseStream"].__contains__("fast"):
-        return "Fast"
-    elif row["releaseStream"].__contains__("stable"):
-        return "Stable"
-    elif row["releaseStream"].__contains__("eus"):
-        return "EUS"
-    elif row["releaseStream"].__contains__("candidate"):
-        return "Release Candidate"
-    elif row["releaseStream"].__contains__("rc"):
-        return "Release Candidate"
-    elif row["releaseStream"].__contains__("nightly"):
-        return "Nightly"
-    elif row["releaseStream"].__contains__("ci"):
-        return "ci"
-    elif row["releaseStream"].__contains__("ec"):
-        return "Engineering Candidate"
-    return "Stable"
+    releaseStream = next(
+        (
+            v
+            for k, v in constants.RELEASE_STREAM_DICT.items()
+            if k in row["releaseStream"]
+        ),
+        "Stable",
+    )
+    return releaseStream
 
 
 def build_sort_terms(sort_string: str) -> list[dict[str, str]]:
@@ -98,3 +90,28 @@ def build_sort_terms(sort_string: str) -> list[dict[str, str]]:
             )
         sort_terms.append({f"{key}": {"order": dir}})
     return sort_terms
+
+
+def buildAggregateQuery(category):
+    aggregate = {}
+    category_data = getattr(constants, category)
+    for x, y in category_data.items():
+        obj = {x: {"terms": {"field": y}}}
+        aggregate.update(obj)
+    return aggregate
+
+
+def buildReleaseStreamFilter(input_array):
+    mapped_array = []
+    for item in input_array:
+        # Find the first matching key in the map
+        match = next(
+            (
+                value
+                for key, value in constants.RELEASE_STREAM_DICT.items()
+                if key in item
+            ),
+            "Stable",
+        )
+        mapped_array.append(match)
+    return list(set(mapped_array))

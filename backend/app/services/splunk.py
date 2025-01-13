@@ -63,24 +63,19 @@ class SplunkService:
 
         try:
             # Run the job and retrieve results
-            job = self.service.jobs.create(
+            job = await self.service.jobs.create(
                 search_query,
                 exec_mode="normal",
                 earliest_time=query["earliest_time"],
                 latest_time=query["latest_time"],
             )
-
-            # Wait for the job to finish
-            while not job.is_done():
-                job.refresh()
-
             oneshotsearch_results = self.service.jobs.oneshot(searchindex, **query)
-
         except Exception as e:
             print("Error querying splunk: {}".format(e))
             return None
 
         # Fetch the results
+        total_records = 0
         for result in job.results(output_mode="json"):
             decoded_data = json.loads(result.decode("utf-8"))
             value = decoded_data.get("results")
@@ -109,6 +104,55 @@ class SplunkService:
     async def _stream_results(self, oneshotsearch_results):
         for record in results.JSONResultsReader(oneshotsearch_results):
             yield record
+
+    async def filterPost(self, query, searchList=""):
+        """
+        Query data to construct filter from splunk server using splunk lib sdk
+
+        Args:
+            query (string): splunk query
+            OPTIONAL: searchList (string): additional query parameters for index
+        """
+
+        try:
+            # If additional search parameters are provided, include those in searchindex
+            searchindex = (
+                f"search index={self.indice} {searchList}"
+                if searchList
+                else f"search index={self.indice}"
+            )
+            search_query = ""
+            if searchList:
+                search_query = "search index={} {} | stats count AS total_records, values(cpu) AS cpu, values(node_name) AS nodeName, values(test_type) AS benchmark, values(ocp_version) AS ocpVersion, values(ocp_build) AS releaseStream".format(
+                    self.indice, searchList
+                )
+            else:
+                search_query = "search index={} | stats count AS total_records, values(cpu) AS cpu, values(node_name) AS nodeName, values(test_type) AS benchmark, values(ocp_version) AS ocpVersion, values(ocp_build) AS releaseStream".format(
+                    self.indice
+                )
+
+            try:
+                # Run the job and retrieve results
+                job = await self.service.jobs.create(
+                    search_query,
+                    exec_mode="blocking",
+                    earliest_time=query["earliest_time"],
+                    latest_time=query["latest_time"],
+                )
+            except Exception as e:
+                print("Error querying in filters splunk: {}".format(e))
+                return None
+
+            value = []
+            total_records = 0
+            for result in job.results(output_mode="json"):
+                decoded_data = json.loads(result.decode("utf-8"))
+                value = decoded_data.get("results")
+                total_records = value[0]["total_records"]
+
+            return {"data": value, "total": total_records}
+        except Exception as e:
+            print(f"Error on building data for filters: {e}")
 
     async def close(self):
         """Closes splunk client connections"""

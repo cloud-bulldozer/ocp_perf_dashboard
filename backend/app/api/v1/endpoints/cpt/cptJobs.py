@@ -11,7 +11,7 @@ from .maps.quay import quayMapper
 from .maps.hce import hceMapper
 from .maps.telco import telcoMapper
 from .maps.ocm import ocmMapper
-from ...commons.example_responses import cpt_200_response, response_422
+from app.api.v1.commons.example_responses import cpt_200_response, response_422
 from fastapi.param_functions import Query
 
 router = APIRouter()
@@ -29,7 +29,7 @@ products = {
     "/api/v1/cpt/jobs",
     summary="Returns a job list from all the products.",
     description="Returns a list of jobs in the specified dates of requested size \
-            If not dates are provided the API will default the values. \
+            If dates are not provided the API will default the values: \
             `startDate`: will be set to the day of the request minus 5 days.\
             `endDate`: will be set to the day of the request.",
     responses={

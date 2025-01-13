@@ -3,8 +3,6 @@ import * as TYPES from "@/actions/types.js";
 
 import { appendDateFilter, appendQueryString } from "@/utils/helper.js";
 import {
-  buildFilterData,
-  calculateMetrics,
   deleteAppliedFilters,
   getFilteredData,
   getRequestParams,
@@ -47,13 +45,10 @@ export const fetchTelcoJobsData = () => async (dispatch) => {
       dispatch({
         type: TYPES.SET_TELCO_PAGE_TOTAL,
         payload: {
-          total: response.data.total,
+          total: Number(response.data.total),
           offset: response.data.offset,
         },
       });
-
-      dispatch(applyFilters());
-      dispatch(tableReCalcValues());
     }
   } catch (error) {
     dispatch(showFailureToast());
@@ -129,7 +124,7 @@ export const applyFilters = () => (dispatch, getState) => {
     payload: filtered,
   });
   dispatch(tableReCalcValues());
-  dispatch(buildFilterData("telco"));
+  dispatch(buildFilterData());
 };
 export const setTelcoAppliedFilters = (navigate) => (dispatch, getState) => {
   const { selectedFilters, start_date, end_date } = getState().telco;
@@ -202,13 +197,19 @@ export const applyTelcoDateFilter =
     dispatch(fetchTelcoJobsData());
   };
 
-export const getTelcoSummary = () => (dispatch, getState) => {
-  const results = [...getState().telco.filteredResults];
-
-  const countObj = calculateMetrics(results);
+export const getTelcoSummary = (countObj) => (dispatch) => {
+  const other =
+    countObj["total"] -
+    ((countObj["success"] || 0) + (countObj["failure"] || 0));
+  const summary = {
+    othersCount: other,
+    successCount: Number(countObj["success"]) || 0,
+    failureCount: Number(countObj["failure"]) || 0,
+    total: Number(countObj["total"]),
+  };
   dispatch({
     type: TYPES.SET_TELCO_SUMMARY,
-    payload: countObj,
+    payload: summary,
   });
 };
 
@@ -287,4 +288,26 @@ export const tableReCalcValues = () => (dispatch, getState) => {
   const { page, perPage } = getState().telco;
   dispatch(getTelcoSummary());
   dispatch(setTelcoPageOptions(page, perPage));
+};
+
+export const buildFilterData = () => async (dispatch, getState) => {
+  try {
+    const { tableFilters, categoryFilterValue } = getState().telco;
+
+    const params = dispatch(getRequestParams("telco"));
+
+    const response = await API.get("/api/v1/telco/filters", { params });
+
+    if (response.status === 200 && response?.data?.filterData?.length > 0) {
+      dispatch(getTelcoSummary(response.data.summary));
+      dispatch({
+        type: TYPES.SET_TELCO_FILTER_DATA,
+        payload: response.data.filterData,
+      });
+      const activeFilter = categoryFilterValue || tableFilters[0].name;
+      dispatch(setTelcoCatFilters(activeFilter));
+    }
+  } catch (error) {
+    dispatch(showFailureToast());
+  }
 };

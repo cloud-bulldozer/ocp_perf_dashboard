@@ -43,7 +43,8 @@ const TableFilter = (props) => {
 
   const category =
     filterData?.length > 0 &&
-    filterData.filter((item) => item.name === categoryFilterValue)[0].key;
+    categoryFilterValue &&
+    filterData.filter((item) => item.name === categoryFilterValue)?.[0]?.key;
 
   const getFilterName = (key) => {
     const filter =
@@ -68,15 +69,14 @@ const TableFilter = (props) => {
   const endDateChangeHandler = (date, key) => {
     setDateFilter(key, date, navigation, type);
   };
-
   return (
     <>
       <Toolbar id="filter-toolbar">
-        {tableFilters?.length > 0 && filterOptions?.length > 0 && (
+        {filterData?.length > 0 && (
           <ToolbarContent className="field-filter">
             <ToolbarItem style={{ marginInlineEnd: 0 }}>
               <SelectBox
-                options={tableFilters}
+                options={filterData}
                 onChange={onCategoryChange}
                 selected={categoryFilterValue}
                 icon={<FilterIcon />}
