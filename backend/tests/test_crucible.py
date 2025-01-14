@@ -788,24 +788,76 @@ class TestCrucible:
             "total": 0,
         } == await fake_crucible.get_runs()
 
+    async def test_get_runs_time_reverse(self, fake_crucible: CrucibleService):
+        """Test run summary"""
+        fake_crucible.elastic.set_query("run", [])
+        fake_crucible.elastic.set_query("iteration", [])
+        fake_crucible.elastic.set_query("tag", [])
+        fake_crucible.elastic.set_query("param", [])
+        with pytest.raises(HTTPException) as exc:
+            await fake_crucible.get_runs(start="2025-01-01", end="2024-01-01")
+        assert 422 == exc.value.status_code
+        assert {
+            "error": "Invalid date format, start_date must be less than end_date"
+        } == exc.value.detail
+
     @pytest.mark.parametrize(
-        "args",
+        "args,miss,notag,noparam",
         (
-            {},
-            {"size": 2, "offset": 1},
-            {"start": "2024-01-01"},
-            {"end": "2024-02-01"},
-            {"start": "2024-01-01", "end": "2025-01-01"},
-            {"sort": ["end:desc"]},
-            {"filter": ["tag:a=42", "param:z=xyzzy", "run:benchmark=test"]},
+            ({}, False, False, False),
+            ({"size": 2, "offset": 1}, False, False, False),
+            ({"start": "2024-01-01"}, False, False, False),
+            ({"end": "2024-02-01"}, False, False, False),
+            ({"start": "2024-01-01", "end": "2025-01-01"}, False, False, False),
+            ({"sort": ["end:desc"]}, False, False, False),
+            (
+                {"filter": ["tag:a=42", "param:z=xyzzy", "run:benchmark=test"]},
+                False,
+                False,
+                False,
+            ),
+            ({"filter": ["tag:a=42", "param:z=xyzzy"]}, True, False, False),
+            ({"filter": ["tag:a=42", "param:z=xyzzy"]}, False, True, False),
+            ({"filter": ["tag:a=42", "param:z=xyzzy"]}, False, False, True),
         ),
     )
-    async def test_get_runs_simple(self, args, fake_crucible: CrucibleService):
-        """Test run summary"""
-        fake_crucible.elastic.set_query(
-            "run",
-            [{"run": {"id": "r1", "begin": "0", "end": "5000", "benchmark": "test"}}],
-        )
+    async def test_get_runs_queries(
+        self, args, miss, notag, noparam, fake_crucible: CrucibleService
+    ):
+        """Test processing of various query parameters
+
+        Note, this isn't really testing "behavior" of the filters, which is all
+        in Opensearch, just the CPT service's handling of the query parameters.
+
+        TBD: This should really verify the generated Opensearch query filters,
+        although that's mostly covered by earlier tests.
+        """
+        runs = [
+            {"run": {"id": "r1", "begin": "0", "end": "5000", "benchmark": "test"}},
+        ]
+        if miss:
+            # Add additional runs which will be rejected by filters
+            runs.extend(
+                [
+                    {
+                        "run": {
+                            "id": "r2",
+                            "begin": "110",
+                            "end": "7000",
+                            "benchmark": "test",
+                        }
+                    },
+                    {
+                        "run": {
+                            "id": "r3",
+                            "begin": "110",
+                            "end": "6000",
+                            "benchmark": "test",
+                        }
+                    },
+                ]
+            )
+        fake_crucible.elastic.set_query("run", runs)
         fake_crucible.elastic.set_query(
             "iteration",
             [
@@ -816,7 +868,7 @@ class TestCrucible:
                         "num": 1,
                         "primary-period": "tp",
                         "primary-metric": "src::tst1",
-                        "status": "fail",
+                        "status": "pass",
                     },
                 },
                 {
@@ -829,14 +881,32 @@ class TestCrucible:
                         "status": "pass",
                     },
                 },
+                {
+                    "run": {"id": "r1"},
+                    "iteration": {
+                        "id": "i3",
+                        "num": 3,
+                        "primary-period": "tp",
+                        "primary-metric": "src::tst1",
+                        "status": "fail",
+                    },
+                },
             ],
         )
-        fake_crucible.elastic.set_query(
-            "tag", [{"run": {"id": "r1"}, "tag": {"name": "a", "val": 42}}], repeat=2
-        )
-        fake_crucible.elastic.set_query(
-            "param",
-            [
+
+        if notag:
+            tags = []
+        else:
+            tags = [
+                {"run": {"id": "r1"}, "tag": {"name": "a", "val": 42}},
+                {"run": {"id": "r2"}, "tag": {"name": "a", "val": 42}},
+            ]
+        fake_crucible.elastic.set_query("tag", tags, repeat=2)
+
+        if noparam:
+            params = []
+        else:
+            params = [
                 {
                     "run": {"id": "r1"},
                     "iteration": {"id": "i1"},
@@ -844,6 +914,11 @@ class TestCrucible:
                 },
                 {
                     "run": {"id": "r1"},
+                    "iteration": {"id": "i1"},
+                    "param": {"arg": "z", "val": "xyzzy"},
+                },
+                {
+                    "run": {"id": "r3"},
                     "iteration": {"id": "i1"},
                     "param": {"arg": "z", "val": "xyzzy"},
                 },
@@ -857,9 +932,8 @@ class TestCrucible:
                     "iteration": {"id": "i2"},
                     "param": {"arg": "x", "val": "plugh"},
                 },
-            ],
-            repeat=2,
-        )
+            ]
+        fake_crucible.elastic.set_query("param", params, repeat=2)
         expected = {
             "count": 1,
             "offset": 0,
@@ -883,7 +957,7 @@ class TestCrucible:
                             ),
                             "primary_metric": "src::tst1",
                             "primary_period": "tp",
-                            "status": "fail",
+                            "status": "pass",
                         },
                         {
                             "iteration": 2,
@@ -898,10 +972,15 @@ class TestCrucible:
                             "primary_period": "tp",
                             "status": "pass",
                         },
+                        {
+                            "iteration": 3,
+                            "params": {},
+                            "primary_metric": "src::tst1",
+                            "primary_period": "tp",
+                            "status": "fail",
+                        },
                     ],
-                    "params": {
-                        "b": "cde",
-                    },
+                    "params": {},
                     "primary_metrics": {"src::tst1", "src::tst2"},
                     "status": "fail",
                     "tags": defaultdict(None, {"a": 42}),
@@ -910,6 +989,13 @@ class TestCrucible:
             "sort": [],
             "total": 1,
         }
+        if notag or noparam:
+            expected["results"] = []
+            expected["count"] = 0
+            expected["total"] = 0
+        else:
+            if miss:
+                expected["total"] = 3
         if "size" in args:
             expected["size"] = args["size"]
         if args.get("offset"):
